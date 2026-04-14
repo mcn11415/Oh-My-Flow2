@@ -2,12 +2,48 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 安装 Python 依赖
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    ALLOW_DOCKER_HEADED_CAPTCHA=true \
+    PLAYWRIGHT_BROWSERS_PATH=0
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libglib2.0-0 \
+        libnss3 \
+        libnspr4 \
+        libdbus-1-3 \
+        libatk1.0-0 \
+        libatk-bridge2.0-0 \
+        libatspi2.0-0 \
+        libx11-6 \
+        libx11-xcb1 \
+        libxcb1 \
+        libxcomposite1 \
+        libxdamage1 \
+        libxext6 \
+        libxfixes3 \
+        libxrandr2 \
+        libgbm1 \
+        libasound2 \
+        libpango-1.0-0 \
+        libpangocairo-1.0-0 \
+        libcairo2 \
+        libgtk-3-0 \
+        libdrm2 \
+        libxshmfence1 \
+        fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
-RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
+RUN pip install --no-cache-dir --root-user-action=ignore -r requirements.txt \
+    && python -m playwright install --with-deps chromium
 
 COPY . .
 
+COPY docker/entrypoint.headed.sh /usr/local/bin/entrypoint.headed.sh
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.headed.sh && chmod +x /usr/local/bin/entrypoint.headed.sh
+
 EXPOSE 8000
 
-CMD ["python", "main.py"]
+CMD ["/usr/local/bin/entrypoint.headed.sh"]
