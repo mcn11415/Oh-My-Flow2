@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Header, Request
 from fastapi.responses import JSONResponse
@@ -325,6 +326,56 @@ def _extract_error_summary(payload: Any) -> str:
         return ""
 
     return _truncate_text(payload)
+
+
+def _read_file_tail(
+    file_path: Path, *, lines: int = 80, max_bytes: int = 65536
+) -> Dict[str, Any]:
+    """Read the last N lines from a text file without loading the whole file."""
+    safe_lines = max(1, min(int(lines or 80), 500))
+    safe_bytes = max(4096, min(int(max_bytes or 65536), 262144))
+
+    if not file_path.exists():
+        return {
+            "exists": False,
+            "path": str(file_path),
+            "line_count": 0,
+            "truncated": False,
+            "content": "",
+            "size_bytes": 0,
+        }
+
+    file_size = file_path.stat().st_size
+    read_size = min(file_size, safe_bytes)
+    started_mid_line = False
+    with file_path.open("rb") as f:
+        if read_size < file_size:
+            start_offset = file_size - read_size
+            f.seek(start_offset, os.SEEK_SET)
+            if start_offset > 0:
+                try:
+                    f.seek(start_offset - 1, os.SEEK_SET)
+                    previous_byte = f.read(1)
+                    started_mid_line = previous_byte not in {b"\n", b"\r"}
+                finally:
+                    f.seek(start_offset, os.SEEK_SET)
+        raw = f.read(read_size)
+
+    text = raw.decode("utf-8", errors="replace")
+    raw_lines = text.splitlines()
+    truncated = read_size < file_size
+    if truncated and started_mid_line and raw_lines:
+        raw_lines = raw_lines[1:]
+    tail_lines = raw_lines[-safe_lines:]
+
+    return {
+        "exists": True,
+        "path": str(file_path),
+        "line_count": len(tail_lines),
+        "truncated": truncated,
+        "content": "\n".join(tail_lines),
+        "size_bytes": file_size,
+    }
 
 
 def _guess_client_hints_from_user_agent(user_agent: str) -> Dict[str, str]:
@@ -1788,6 +1839,33 @@ async def refresh_browser_runtime_diagnostics(token: str = Depends(verify_admin_
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"浏览器启动诊断失败: {e}")
+
+
+@router.get("/api/admin/debug-log-tail")
+async def get_debug_log_tail(
+    lines: int = 80,
+    max_bytes: int = 65536,
+    token: str = Depends(verify_admin_token),
+):
+    """Read the tail of debug_logger output from logs.txt with bounded IO."""
+    _ = token
+    log_file = Path("logs.txt")
+    try:
+        payload = await asyncio.to_thread(
+            _read_file_tail,
+            log_file,
+            lines=lines,
+            max_bytes=max_bytes,
+        )
+        return {
+            "success": True,
+            "debug_enabled": bool(getattr(config, "debug_enabled", False)),
+            "log_requests": bool(getattr(config, "debug_log_requests", False)),
+            "log_responses": bool(getattr(config, "debug_log_responses", False)),
+            **payload,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"读取 debug 日志失败: {e}")
 
 
 @router.get("/api/logs")
