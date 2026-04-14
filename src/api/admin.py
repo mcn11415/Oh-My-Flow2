@@ -187,6 +187,7 @@ def _build_browser_runtime_check(
             and getattr(service, "browser", None)
         )
         last_health_ok = bool(getattr(service, "_last_health_probe_ok", False))
+        diagnostics = service.get_browser_startup_diagnostics()
         mode_details = {
             "captcha_method": captcha_method,
             "required": True,
@@ -199,6 +200,13 @@ def _build_browser_runtime_check(
             "last_health_probe_ok": last_health_ok,
             "active_token_count": len(active_tokens),
             "running_in_docker": bool(os.path.exists("/.dockerenv")),
+            "diagnostics_available": bool(diagnostics.get("available")),
+            "last_diagnostic_at": diagnostics.get("generated_at"),
+            "browser_path": diagnostics.get("browser_path"),
+            "browser_version": diagnostics.get("browser_version_output"),
+            "probe_status": diagnostics.get("probe_status"),
+            "probe_returncode": diagnostics.get("probe_returncode"),
+            "tmp_dir_writable": diagnostics.get("tmp_dir_writable"),
         }
         if initialized and resident_ready > 0:
             return _health_check(
@@ -1708,6 +1716,67 @@ async def get_admin_health(token: str = Depends(verify_admin_token)):
         "summary": _health_summary(checks),
         "checks": checks,
     }
+
+
+@router.get("/api/admin/browser-runtime-diagnostics")
+async def get_browser_runtime_diagnostics(token: str = Depends(verify_admin_token)):
+    """Return cached browser startup diagnostics for personal mode."""
+    if str(getattr(config, "captcha_method", "") or "") != "personal":
+        return {
+            "success": True,
+            "supported": False,
+            "message": "当前验证码模式不是 personal，无浏览器启动诊断缓存",
+            "diagnostics": {},
+        }
+
+    try:
+        from ..services.browser_captcha_personal import BrowserCaptchaService
+
+        service = BrowserCaptchaService._instance
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"加载 personal 浏览器服务失败: {e}"
+        )
+
+    if service is None:
+        return {
+            "success": True,
+            "supported": True,
+            "message": "personal 浏览器服务尚未创建实例",
+            "diagnostics": {},
+        }
+
+    return {
+        "success": True,
+        "supported": True,
+        "message": "ok",
+        "diagnostics": service.get_browser_startup_diagnostics(),
+    }
+
+
+@router.post("/api/admin/browser-runtime-diagnostics/refresh")
+async def refresh_browser_runtime_diagnostics(token: str = Depends(verify_admin_token)):
+    """Run a one-shot low-risk Chromium startup probe and cache the result."""
+    if str(getattr(config, "captcha_method", "") or "") != "personal":
+        return {
+            "success": False,
+            "supported": False,
+            "message": "当前验证码模式不是 personal，无法执行浏览器启动诊断",
+        }
+
+    try:
+        from ..services.browser_captcha_personal import BrowserCaptchaService
+
+        service = await BrowserCaptchaService.get_instance(db)
+        diagnostics = await service.run_browser_startup_probe()
+        return {
+            "success": True,
+            "supported": True,
+            "message": "浏览器启动诊断完成",
+            "diagnostics": diagnostics,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"浏览器启动诊断失败: {e}")
 
 
 @router.get("/api/logs")

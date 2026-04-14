@@ -15,6 +15,7 @@ import shutil
 import tempfile
 import subprocess
 import types
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, Iterable
 
 from ..core.logger import debug_logger
@@ -665,6 +666,35 @@ class BrowserCaptchaService:
         self._last_runtime_restart_at = 0.0
         self._proxy_url: Optional[str] = None
         self._proxy_ext_dir: Optional[str] = None
+        self._diagnostics_lock = asyncio.Lock()
+        self._browser_startup_diagnostics: Dict[str, Any] = {
+            "available": False,
+            "generated_at": None,
+            "reason": "not_run",
+            "browser_path": None,
+            "browser_exists": False,
+            "browser_version_rc": None,
+            "browser_version_output": "",
+            "uid": None,
+            "display": "",
+            "headless": self.headless,
+            "sandbox": False,
+            "running_in_docker": IS_DOCKER,
+            "allow_docker_headed": ALLOW_DOCKER_HEADED,
+            "playwright_browsers_path": os.environ.get("PLAYWRIGHT_BROWSERS_PATH", ""),
+            "tmp_dir": tempfile.gettempdir(),
+            "tmp_dir_writable": None,
+            "tmp_dir_error": "",
+            "probe_status": "not_run",
+            "probe_returncode": None,
+            "probe_timed_out": False,
+            "probe_elapsed_ms": None,
+            "probe_stdout": "",
+            "probe_stderr": "",
+            "launch_args": [],
+            "last_exception_type": "",
+            "last_exception": "",
+        }
         # 自定义站点打码常驻页（用于 score-test）
         self._custom_tabs: dict[str, Dict[str, Any]] = {}
         self._custom_lock = asyncio.Lock()
@@ -817,6 +847,194 @@ class BrowserCaptchaService:
 
     def _mark_runtime_restart(self):
         self._last_runtime_restart_at = time.time()
+
+    def get_browser_startup_diagnostics(self) -> Dict[str, Any]:
+        return dict(self._browser_startup_diagnostics)
+
+    def _safe_text(self, value: Any, limit: int = 800) -> str:
+        text = str(value or "").strip()
+        if len(text) <= limit:
+            return text
+        return f"{text[: limit - 3]}..."
+
+    def _set_browser_startup_diagnostics(self, **updates):
+        snapshot = dict(self._browser_startup_diagnostics)
+        snapshot.update(updates)
+        snapshot["available"] = True
+        snapshot["generated_at"] = datetime.now(timezone.utc).isoformat()
+        self._browser_startup_diagnostics = snapshot
+
+    def _probe_tmp_dir_writable(self) -> tuple[Optional[bool], str]:
+        tmp_dir = tempfile.gettempdir()
+        try:
+            os.makedirs(tmp_dir, exist_ok=True)
+            fd, path = tempfile.mkstemp(prefix="flow2api-probe-", dir=tmp_dir)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write("ok")
+                os.remove(path)
+            except Exception:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+                raise
+            return True, ""
+        except Exception as e:
+            return False, self._safe_text(e, 240)
+
+    async def _collect_browser_startup_diagnostics(
+        self,
+        browser_executable_path: Optional[str],
+        browser_args: list[str],
+        *,
+        reason: str,
+        exception: Optional[BaseException] = None,
+        run_probe: bool = False,
+    ) -> Dict[str, Any]:
+        async with self._diagnostics_lock:
+            effective_uid = None
+            if hasattr(os, "geteuid"):
+                try:
+                    effective_uid = os.geteuid()
+                except Exception:
+                    effective_uid = None
+
+            version_rc = None
+            version_output = ""
+            if browser_executable_path and os.path.exists(browser_executable_path):
+                try:
+                    version_result = await asyncio.to_thread(
+                        subprocess.run,
+                        [browser_executable_path, "--version"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    version_rc = version_result.returncode
+                    version_output = self._safe_text(
+                        (version_result.stdout or "").strip()
+                        or (version_result.stderr or "").strip()
+                        or "<empty>",
+                        240,
+                    )
+                except Exception as e:
+                    version_output = self._safe_text(e, 240)
+
+            tmp_dir_writable, tmp_dir_error = self._probe_tmp_dir_writable()
+
+            probe_status = "skipped"
+            probe_returncode = None
+            probe_timed_out = False
+            probe_elapsed_ms = None
+            probe_stdout = ""
+            probe_stderr = ""
+
+            if (
+                run_probe
+                and browser_executable_path
+                and os.path.exists(browser_executable_path)
+            ):
+                probe_cmd = [
+                    browser_executable_path,
+                    "--headless=new",
+                    "--disable-gpu",
+                    "--disable-dev-shm-usage",
+                    "--no-sandbox",
+                    "--remote-debugging-port=0",
+                    "--dump-dom",
+                    "about:blank",
+                ]
+                started_at = time.time()
+                try:
+                    probe_result = await asyncio.to_thread(
+                        subprocess.run,
+                        probe_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                    )
+                    probe_elapsed_ms = int((time.time() - started_at) * 1000)
+                    probe_returncode = probe_result.returncode
+                    probe_stdout = self._safe_text(probe_result.stdout, 1200)
+                    probe_stderr = self._safe_text(probe_result.stderr, 1200)
+                    probe_status = "ok" if probe_result.returncode == 0 else "fail"
+                except subprocess.TimeoutExpired as e:
+                    probe_elapsed_ms = int((time.time() - started_at) * 1000)
+                    probe_timed_out = True
+                    probe_status = "timeout"
+                    probe_stdout = self._safe_text(getattr(e, "stdout", ""), 1200)
+                    probe_stderr = self._safe_text(getattr(e, "stderr", ""), 1200)
+                except Exception as e:
+                    probe_elapsed_ms = int((time.time() - started_at) * 1000)
+                    probe_status = "error"
+                    probe_stderr = self._safe_text(e, 1200)
+
+            snapshot = {
+                "reason": reason,
+                "browser_path": browser_executable_path,
+                "browser_exists": bool(
+                    browser_executable_path and os.path.exists(browser_executable_path)
+                ),
+                "browser_version_rc": version_rc,
+                "browser_version_output": version_output,
+                "uid": effective_uid,
+                "display": os.environ.get("DISPLAY", "").strip(),
+                "headless": self.headless,
+                "sandbox": False,
+                "running_in_docker": IS_DOCKER,
+                "allow_docker_headed": ALLOW_DOCKER_HEADED,
+                "playwright_browsers_path": os.environ.get(
+                    "PLAYWRIGHT_BROWSERS_PATH", ""
+                ),
+                "tmp_dir": tempfile.gettempdir(),
+                "tmp_dir_writable": tmp_dir_writable,
+                "tmp_dir_error": tmp_dir_error,
+                "probe_status": probe_status,
+                "probe_returncode": probe_returncode,
+                "probe_timed_out": probe_timed_out,
+                "probe_elapsed_ms": probe_elapsed_ms,
+                "probe_stdout": probe_stdout,
+                "probe_stderr": probe_stderr,
+                "launch_args": list(browser_args or []),
+                "last_exception_type": type(exception).__name__ if exception else "",
+                "last_exception": self._safe_text(exception, 1200) if exception else "",
+            }
+            self._set_browser_startup_diagnostics(**snapshot)
+            return dict(self._browser_startup_diagnostics)
+
+    async def run_browser_startup_probe(self) -> Dict[str, Any]:
+        browser_executable_path = (
+            os.environ.get("BROWSER_EXECUTABLE_PATH", "").strip() or None
+        )
+        if browser_executable_path and not os.path.exists(browser_executable_path):
+            browser_executable_path = None
+        if not browser_executable_path:
+            browser_executable_path = _ensure_playwright_browser_path()
+
+        browser_args = [
+            "--headless=new",
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            "--no-sandbox",
+            "--remote-debugging-port=0",
+        ]
+        diagnostics = await self._collect_browser_startup_diagnostics(
+            browser_executable_path,
+            browser_args,
+            reason="manual_probe",
+            run_probe=True,
+        )
+        debug_logger.log_info(
+            "[BrowserCaptcha] 浏览器底层启动诊断完成: "
+            f"status={diagnostics.get('probe_status')}, rc={diagnostics.get('probe_returncode')}, "
+            f"elapsed_ms={diagnostics.get('probe_elapsed_ms')}, browser={diagnostics.get('browser_path') or '<auto>'}"
+        )
+        return diagnostics
 
     def _was_runtime_restarted_recently(self, window_seconds: float = 5.0) -> bool:
         if self._last_runtime_restart_at <= 0.0:
@@ -1763,12 +1981,26 @@ class BrowserCaptchaService:
                 self.browser = None
                 self._initialized = False
                 self._mark_browser_health(False)
+                diagnostics = await self._collect_browser_startup_diagnostics(
+                    browser_executable_path,
+                    effective_launch_args or browser_args,
+                    reason="initialize_failure",
+                    exception=e,
+                    run_probe=True,
+                )
                 debug_logger.log_error(
                     "[BrowserCaptcha] ❌ 浏览器启动失败: "
                     f"{type(e).__name__}: {str(e)} | "
                     f"display={display_value or '<empty>'} | "
                     f"executable={browser_executable_path or '<auto>'} | "
                     f"args={' '.join(effective_launch_args) if effective_launch_args else '<none>'}"
+                )
+                debug_logger.log_error(
+                    "[BrowserCaptcha] ❌ 浏览器启动诊断快照: "
+                    f"probe_status={diagnostics.get('probe_status')}, rc={diagnostics.get('probe_returncode')}, "
+                    f"elapsed_ms={diagnostics.get('probe_elapsed_ms')}, tmp_writable={diagnostics.get('tmp_dir_writable')}, "
+                    f"uid={diagnostics.get('uid')}, version={diagnostics.get('browser_version_output') or '<empty>'}, "
+                    f"stderr={self._safe_text(diagnostics.get('probe_stderr'), 400)}"
                 )
                 raise
 
