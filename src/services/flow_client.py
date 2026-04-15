@@ -41,19 +41,12 @@ class FlowClient:
         ] = contextvars.ContextVar("flow_request_fingerprint", default=None)
         self._remote_browser_prefill_last_sent: Dict[str, float] = {}
 
-        # Default "real browser" headers (Android Chrome style) to reduce upstream 4xx/5xx instability.
-        # These will be applied as defaults (won't override caller-provided headers).
+        # Conservative default browser headers. Do not inject platform/mobile hints here,
+        # otherwise we can end up with self-contradictory identities such as desktop UA + Android CH hints.
         self._default_client_headers = {
-            "sec-ch-ua-mobile": "?1",
-            "sec-ch-ua-platform": '"Android"',
             "sec-fetch-dest": "empty",
             "sec-fetch-mode": "cors",
             "sec-fetch-site": "cross-site",
-            "x-browser-channel": "stable",
-            "x-browser-copyright": "Copyright 2026 Google LLC. All Rights reserved.",
-            "x-browser-validation": "UujAs0GAwdnCJ9nvrswZ+O+oco0=",
-            "x-browser-year": "2026",
-            "x-client-data": "CJS2yQEIpLbJAQipncoBCNj9ygEIlKHLAQiFoM0BGP6lzwE=",
         }
         # 发车策略改为“请求到就发”：
         # 不在 flow2api 本地对提交做批次整形或排队，避免把同批请求打成阶梯。
@@ -164,6 +157,16 @@ class FlowClient:
         """清理请求链路绑定的浏览器指纹。"""
         self._set_request_fingerprint(None)
 
+    def _should_use_browser_style_plain_text_body(
+        self, url: str, json_data: Optional[Dict[str, Any]]
+    ) -> bool:
+        if not isinstance(json_data, dict):
+            return False
+        return "flowMedia:batchGenerateImages" in str(url or "")
+
+    def _serialize_browser_style_body(self, json_data: Optional[Dict[str, Any]]) -> str:
+        return json.dumps(json_data or {}, ensure_ascii=False, separators=(",", ":"))
+
     async def _make_request(
         self,
         method: str,
@@ -239,13 +242,23 @@ class FlowClient:
         if isinstance(fingerprint, dict):
             fingerprint_user_agent = fingerprint.get("user_agent")
 
+        browser_style_plain_text = self._should_use_browser_style_plain_text_body(
+            url, json_data
+        )
         headers.update(
             {
-                "Content-Type": "application/json",
+                "Content-Type": "text/plain;charset=UTF-8"
+                if browser_style_plain_text
+                else "application/json",
                 "User-Agent": fingerprint_user_agent
                 or self._generate_user_agent(account_id),
             }
         )
+
+        if browser_style_plain_text:
+            headers.setdefault("Accept", "*/*")
+            headers.setdefault("Origin", "https://labs.google")
+            headers.setdefault("Referer", "https://labs.google/")
 
         # 若存在打码浏览器指纹，覆盖关键客户端提示头，保证提交请求与打码时一致。
         if isinstance(fingerprint, dict):
@@ -286,14 +299,24 @@ class FlowClient:
                         impersonate="chrome110",
                     )
                 else:  # POST
-                    response = await session.post(
-                        url,
-                        headers=headers,
-                        json=json_data,
-                        proxy=proxy_url,
-                        timeout=request_timeout,
-                        impersonate="chrome110",
-                    )
+                    if browser_style_plain_text:
+                        response = await session.post(
+                            url,
+                            headers=headers,
+                            data=self._serialize_browser_style_body(json_data),
+                            proxy=proxy_url,
+                            timeout=request_timeout,
+                            impersonate="chrome110",
+                        )
+                    else:
+                        response = await session.post(
+                            url,
+                            headers=headers,
+                            json=json_data,
+                            proxy=proxy_url,
+                            timeout=request_timeout,
+                            impersonate="chrome110",
+                        )
 
                 duration_ms = (time.time() - start_time) * 1000
 
@@ -414,12 +437,23 @@ class FlowClient:
     ) -> Dict[str, Any]:
         """使用 urllib 执行 JSON 请求，作为 curl_cffi 的网络回退。"""
         request_headers = dict(headers or {})
-        request_headers.setdefault("Accept", "application/json")
+        browser_style_plain_text = self._should_use_browser_style_plain_text_body(
+            url, json_data
+        )
+        request_headers.setdefault(
+            "Accept", "*/*" if browser_style_plain_text else "application/json"
+        )
 
         data = None
         if method.upper() != "GET" and json_data is not None:
-            data = json.dumps(json_data, ensure_ascii=False).encode("utf-8")
-            request_headers["Content-Type"] = "application/json"
+            if browser_style_plain_text:
+                data = self._serialize_browser_style_body(json_data).encode("utf-8")
+                request_headers["Content-Type"] = "text/plain;charset=UTF-8"
+                request_headers.setdefault("Origin", "https://labs.google")
+                request_headers.setdefault("Referer", "https://labs.google/")
+            else:
+                data = json.dumps(json_data, ensure_ascii=False).encode("utf-8")
+                request_headers["Content-Type"] = "application/json"
 
         handlers = [urllib.request.HTTPSHandler(context=ssl.create_default_context())]
         if proxy_url:
