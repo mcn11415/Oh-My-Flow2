@@ -58,6 +58,37 @@ class DebugLogger:
         """Write separator line"""
         self.logger.info(char * length)
 
+    def format_headers_for_log(
+        self, headers: Optional[Dict[str, str]]
+    ) -> Dict[str, str]:
+        """Return a masked/log-safe copy of request headers."""
+        masked_headers = dict(headers or {})
+        if "Authorization" in masked_headers or "authorization" in masked_headers:
+            auth_key = (
+                "Authorization"
+                if "Authorization" in masked_headers
+                else "authorization"
+            )
+            auth_value = masked_headers[auth_key]
+            if isinstance(auth_value, str) and auth_value.startswith("Bearer "):
+                token = auth_value[7:]
+                masked_headers[auth_key] = f"Bearer {self._mask_token(token)}"
+
+        if "Cookie" in masked_headers:
+            cookie_value = masked_headers["Cookie"]
+            if (
+                isinstance(cookie_value, str)
+                and "__Secure-next-auth.session-token=" in cookie_value
+            ):
+                parts = cookie_value.split("=", 1)
+                if len(parts) == 2:
+                    st_token = parts[1].split(";")[0]
+                    masked_headers["Cookie"] = (
+                        f"__Secure-next-auth.session-token={self._mask_token(st_token)}"
+                    )
+
+        return masked_headers
+
     def _truncate_large_fields(self, data: Any, max_length: int = 200) -> Any:
         """对大字段进行截断处理，特别是 base64 编码的图片数据
 
@@ -115,28 +146,7 @@ class DebugLogger:
 
             # Headers
             self.logger.info("\n📋 Headers:")
-            masked_headers = dict(headers)
-            if "Authorization" in masked_headers or "authorization" in masked_headers:
-                auth_key = (
-                    "Authorization"
-                    if "Authorization" in masked_headers
-                    else "authorization"
-                )
-                auth_value = masked_headers[auth_key]
-                if auth_value.startswith("Bearer "):
-                    token = auth_value[7:]
-                    masked_headers[auth_key] = f"Bearer {self._mask_token(token)}"
-
-            # Mask Cookie header (ST token)
-            if "Cookie" in masked_headers:
-                cookie_value = masked_headers["Cookie"]
-                if "__Secure-next-auth.session-token=" in cookie_value:
-                    parts = cookie_value.split("=", 1)
-                    if len(parts) == 2:
-                        st_token = parts[1].split(";")[0]
-                        masked_headers["Cookie"] = (
-                            f"__Secure-next-auth.session-token={self._mask_token(st_token)}"
-                        )
+            masked_headers = self.format_headers_for_log(headers)
 
             for key, value in masked_headers.items():
                 self.logger.info(f"  {key}: {value}")
