@@ -173,6 +173,7 @@ class FlowClient:
         url: str,
         headers: Optional[Dict] = None,
         json_data: Optional[Dict] = None,
+        request_fingerprint: Optional[Dict[str, Any]] = None,
         use_st: bool = False,
         st_token: Optional[str] = None,
         use_at: bool = False,
@@ -196,7 +197,7 @@ class FlowClient:
             use_media_proxy: 是否使用图片上传/下载代理
             respect_fingerprint_proxy: 是否优先使用打码浏览器指纹里的代理
         """
-        fingerprint = self._request_fingerprint_ctx.get()
+        fingerprint = request_fingerprint or self._request_fingerprint_ctx.get()
 
         proxy_url = None
         if self.proxy_manager:
@@ -565,6 +566,7 @@ class FlowClient:
         url: str,
         json_data: Dict[str, Any],
         at: str,
+        request_fingerprint: Optional[Dict[str, Any]] = None,
         attempt_trace: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """图片生成请求使用更短超时，并在网络超时时快速重试。"""
@@ -574,7 +576,7 @@ class FlowClient:
 
         # 对于浏览器/远程浏览器打码链路，优先保持与打码时一致的出口。
         # 否则在首跳改走媒体代理时，容易触发 reCAPTCHA 校验失败并放大长尾。
-        fingerprint = self._request_fingerprint_ctx.get()
+        fingerprint = request_fingerprint or self._request_fingerprint_ctx.get()
         has_fingerprint_context = bool(isinstance(fingerprint, dict) and fingerprint)
 
         has_media_proxy = False
@@ -622,6 +624,7 @@ class FlowClient:
                     method="POST",
                     url=url,
                     json_data=json_data,
+                    request_fingerprint=fingerprint,
                     use_at=True,
                     at_token=at,
                     timeout=request_timeout,
@@ -1076,7 +1079,11 @@ class FlowClient:
 
             launch_gate_acquired = True
             try:
-                recaptcha_token, browser_id = await self._get_recaptcha_token(
+                (
+                    recaptcha_token,
+                    browser_id,
+                    request_fingerprint,
+                ) = await self._get_recaptcha_token(
                     project_id, action="IMAGE_GENERATION", token_id=token_id
                 )
             finally:
@@ -1141,6 +1148,7 @@ class FlowClient:
                     url=url,
                     json_data=json_data,
                     at=at,
+                    request_fingerprint=request_fingerprint,
                     attempt_trace=attempt_trace,
                 )
                 attempt_trace["success"] = True
@@ -1207,7 +1215,11 @@ class FlowClient:
 
         for retry_attempt in range(max_retries):
             # 获取 reCAPTCHA token - 使用 IMAGE_GENERATION action
-            recaptcha_token, browser_id = await self._get_recaptcha_token(
+            (
+                recaptcha_token,
+                browser_id,
+                request_fingerprint,
+            ) = await self._get_recaptcha_token(
                 project_id, action="IMAGE_GENERATION", token_id=token_id
             )
             if not recaptcha_token:
@@ -1245,6 +1257,7 @@ class FlowClient:
                     method="POST",
                     url=url,
                     json_data=json_data,
+                    request_fingerprint=request_fingerprint,
                     use_at=True,
                     at_token=at,
                     timeout=config.upsample_timeout,
@@ -1330,7 +1343,11 @@ class FlowClient:
 
             launch_gate_acquired = True
             try:
-                recaptcha_token, browser_id = await self._get_recaptcha_token(
+                (
+                    recaptcha_token,
+                    browser_id,
+                    request_fingerprint,
+                ) = await self._get_recaptcha_token(
                     project_id, action="VIDEO_GENERATION", token_id=token_id
                 )
             finally:
@@ -1379,6 +1396,7 @@ class FlowClient:
                     method="POST",
                     url=url,
                     json_data=json_data,
+                    request_fingerprint=request_fingerprint,
                     use_at=True,
                     at_token=at,
                 )
@@ -1447,7 +1465,11 @@ class FlowClient:
 
             launch_gate_acquired = True
             try:
-                recaptcha_token, browser_id = await self._get_recaptcha_token(
+                (
+                    recaptcha_token,
+                    browser_id,
+                    request_fingerprint,
+                ) = await self._get_recaptcha_token(
                     project_id, action="VIDEO_GENERATION", token_id=token_id
                 )
             finally:
@@ -1501,6 +1523,7 @@ class FlowClient:
                     method="POST",
                     url=url,
                     json_data=json_data,
+                    request_fingerprint=request_fingerprint,
                     use_at=True,
                     at_token=at,
                 )
@@ -1572,7 +1595,11 @@ class FlowClient:
 
             launch_gate_acquired = True
             try:
-                recaptcha_token, browser_id = await self._get_recaptcha_token(
+                (
+                    recaptcha_token,
+                    browser_id,
+                    request_fingerprint,
+                ) = await self._get_recaptcha_token(
                     project_id, action="VIDEO_GENERATION", token_id=token_id
                 )
             finally:
@@ -1623,6 +1650,7 @@ class FlowClient:
                     method="POST",
                     url=url,
                     json_data=json_data,
+                    request_fingerprint=request_fingerprint,
                     use_at=True,
                     at_token=at,
                 )
@@ -1692,7 +1720,11 @@ class FlowClient:
 
             launch_gate_acquired = True
             try:
-                recaptcha_token, browser_id = await self._get_recaptcha_token(
+                (
+                    recaptcha_token,
+                    browser_id,
+                    request_fingerprint,
+                ) = await self._get_recaptcha_token(
                     project_id, action="VIDEO_GENERATION", token_id=token_id
                 )
             finally:
@@ -1743,6 +1775,7 @@ class FlowClient:
                     method="POST",
                     url=url,
                     json_data=json_data,
+                    request_fingerprint=request_fingerprint,
                     use_at=True,
                     at_token=at,
                 )
@@ -1810,7 +1843,11 @@ class FlowClient:
 
             launch_gate_acquired = True
             try:
-                recaptcha_token, browser_id = await self._get_recaptcha_token(
+                (
+                    recaptcha_token,
+                    browser_id,
+                    request_fingerprint,
+                ) = await self._get_recaptcha_token(
                     project_id, action="VIDEO_GENERATION", token_id=token_id
                 )
             finally:
@@ -1856,6 +1893,7 @@ class FlowClient:
                     method="POST",
                     url=url,
                     json_data=json_data,
+                    request_fingerprint=request_fingerprint,
                     use_at=True,
                     at_token=at,
                 )
@@ -2364,7 +2402,7 @@ class FlowClient:
         project_id: str,
         action: str = "IMAGE_GENERATION",
         token_id: Optional[int] = None,
-    ) -> tuple[Optional[str], Optional[Union[int, str]]]:
+    ) -> tuple[Optional[str], Optional[Union[int, str]], Optional[Dict[str, Any]]]:
         """获取reCAPTCHA token - 支持多种打码方式
 
         Args:
@@ -2375,7 +2413,7 @@ class FlowClient:
             token_id: 当前业务 token id（browser 模式下用于读取 token 级打码代理）
 
         Returns:
-            (token, browser_id) 元组。
+            (token, browser_id, fingerprint) 元组。
             - browser 模式: browser_id 为本地浏览器 ID
             - remote_browser 模式: browser_id 为远程 session_id
             - 其他模式: browser_id 为 None
@@ -2402,23 +2440,23 @@ class FlowClient:
                 )
                 fingerprint = service.get_last_fingerprint() if token else None
                 self._set_request_fingerprint(fingerprint if token else None)
-                return token, None
+                return token, None, fingerprint if token else None
             except RuntimeError as e:
                 # 捕获 Docker 环境或依赖缺失的明确错误
                 error_msg = str(e)
                 debug_logger.log_error(f"[reCAPTCHA Personal] {error_msg}")
                 print(f"[reCAPTCHA] ❌ 内置浏览器打码失败: {error_msg}")
                 self._set_request_fingerprint(None)
-                return None, None
+                return None, None, None
             except ImportError as e:
                 debug_logger.log_error(f"[reCAPTCHA Personal] 导入失败: {str(e)}")
                 print(f"[reCAPTCHA] ❌ nodriver 未安装，请运行: pip install nodriver")
                 self._set_request_fingerprint(None)
-                return None, None
+                return None, None, None
             except Exception as e:
                 debug_logger.log_error(f"[reCAPTCHA Personal] 错误: {str(e)}")
                 self._set_request_fingerprint(None)
-                return None, None
+                return None, None, None
         # 有头浏览器打码 (playwright)
         elif captcha_method == "browser":
             try:
@@ -2432,25 +2470,25 @@ class FlowClient:
                     await service.get_fingerprint(browser_id) if token else None
                 )
                 self._set_request_fingerprint(fingerprint if token else None)
-                return token, browser_id
+                return token, browser_id, fingerprint if token else None
             except RuntimeError as e:
                 # 捕获 Docker 环境或依赖缺失的明确错误
                 error_msg = str(e)
                 debug_logger.log_error(f"[reCAPTCHA Browser] {error_msg}")
                 print(f"[reCAPTCHA] ❌ 有头浏览器打码失败: {error_msg}")
                 self._set_request_fingerprint(None)
-                return None, None
+                return None, None, None
             except ImportError as e:
                 debug_logger.log_error(f"[reCAPTCHA Browser] 导入失败: {str(e)}")
                 print(
                     f"[reCAPTCHA] ❌ playwright 未安装，请运行: pip install playwright && python -m playwright install chromium"
                 )
                 self._set_request_fingerprint(None)
-                return None, None
+                return None, None, None
             except Exception as e:
                 debug_logger.log_error(f"[reCAPTCHA Browser] 错误: {str(e)}")
                 self._set_request_fingerprint(None)
-                return None, None
+                return None, None, None
         elif captcha_method == "remote_browser":
             try:
                 solve_timeout = self._resolve_remote_browser_solve_timeout(action)
@@ -2476,22 +2514,22 @@ class FlowClient:
                     raise RuntimeError(
                         f"remote_browser 返回缺少 token/session_id: {payload}"
                     )
-                return token, str(session_id)
+                return token, str(session_id), fingerprint if token else None
             except Exception as e:
                 debug_logger.log_error(f"[reCAPTCHA RemoteBrowser] 错误: {str(e)}")
                 self._set_request_fingerprint(None)
-                return None, None
+                return None, None, None
         # API打码服务
         elif captcha_method in ["yescaptcha", "capmonster", "ezcaptcha", "capsolver"]:
             self._set_request_fingerprint(None)
             token = await self._get_api_captcha_token(
                 captcha_method, project_id, action
             )
-            return token, None
+            return token, None, None
         else:
             debug_logger.log_info(f"[reCAPTCHA] 未知的打码方式: {captcha_method}")
             self._set_request_fingerprint(None)
-            return None, None
+            return None, None, None
 
     async def _get_api_captcha_token(
         self, method: str, project_id: str, action: str = "IMAGE_GENERATION"
